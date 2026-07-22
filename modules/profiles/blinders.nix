@@ -39,6 +39,12 @@ in {
         environment.etc."resolv.conf".source = "/var/lib/nixos/etc/resolv.conf";
         networking.resolvconf.enable = false;
 
+
+        programs.bash.interactiveShellInit = lib.mkIf (config.programs.vscode.enable) ''
+            [[ "$TERM_PROGRAM" != vscode ]] || source ${config.programs.vscode.package}/lib/vscode/resources/app/out/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh
+        '';
+        programs.vscode.package = lib.mkDefault pkgs.vscodium; # avoid unfree vscode
+
     }) ]);
 
 }

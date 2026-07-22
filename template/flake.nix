@@ -16,18 +16,19 @@
     { overlays.default = (final: prev: { # export packages for consumption in flakes (/nix code) via overlays
         my-dev-shell = final.mkShell { packages = [ final.hello ]; };
     }); }
-    { devShells = inputs.functions.lib.exportFromPkgs { inherit inputs; what = pkgs: { # export packages/devShells for CLI consumption via (legacy)packages/devShells.
-        default = pkgs.my-dev-shell; # (re-)name your shell "default" for easier use on the CLI
+    { devShells = inputs.functions.lib.exportFromPkgs { inherit inputs; what = pkgs: {
+        default = pkgs.my-dev-shell; # export your shell as "default" shell environment for easier use on the CLI
     }; }; }
 
     ## Enable `nix run .#init` to initialize a blinders sandbox matching this repo to be used rapidly from the CLI or editor integration:
     (inputs.blinders.lib.mkBlindersInitApp {
         inherit inputs;
-        config = {pkgs, ... }: {
+        config = { pkgs, ... }: {
             environment.systemPackages = [ pkgs.hello ];
             programs.bash.interactiveShellInit = inputs.nixpkgs.lib.mkAfter ''
                 export PS1="(blinders) $PS1"
             '';
+            #programs.vscode.enable = true; # for shell integration
         };
         devShell = "my-dev-shell"; # A package/devShell in pkgs (see above)
         args = [

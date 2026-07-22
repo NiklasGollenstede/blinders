@@ -7,19 +7,21 @@ description="EXPERIMENTAL: Run programs in a sandbox with access to only a singl
 argvDesc='[PROGRAM=$SHELL [ARGS]...]'
 declare -g -A allowedArgs=(
     [-t, --tty]="Create a new (pseudo) terminal for the sandbox. Otherwise, the sandbox will not have a controlling terminal. Defaults to true iff no PROGRAM is passed (explicitly). Use »--no-tty«/»-T« to explicitly disable."
-    [-w, --wayland]="Bind the Wayland display socket into the container and set the WAYLAND_DISPLAY environment variable. It may be possible to hijack user input and clipboard contents and the like." # TODO: Consider https://git.sr.ht/~whynothugo/way-secure (not packaged)
-    [-d, --dbus]="Bind the user D-Bus session bus socket into the container and set the DBUS_SESSION_BUS_ADDRESS environment variable. Note that this allows the sandbox to »systemd-run --user« arbitrary commands on the host, thus largely invalidating the sandboxing."
+    [-w, --wayland]="Bind the Wayland display socket into the container and set the WAYLAND_DISPLAY environment variable. It may be possible to hijack user input and clipboard contents and the like." # Consider https://git.sr.ht/~whynothugo/way-secure (not packaged) or https://github.com/talex5/wayland-proxy-virtwl (used by https://github.com/nixpak/nixpak).
+    [-d, --dbus]="Bind the user D-Bus session bus socket into the container and set the DBUS_SESSION_BUS_ADDRESS environment variable. Note that this allows the sandbox to »systemd-run --user« arbitrary commands on the host, thus largely invalidating the sandboxing." # Consider xdg-dbus-proxy (used by https://github.com/nixpak/nixpak).
     [-g, --gpu]="Bind GPU devices (currently just /dev/dri) into the container. May be required for hardware acceleration in GUI applications."
 
     [--dir=path]='Host path to bind into the container at the same location. Defaults to ».«. As a precaution, relative paths are only accepted if they point at a child of »$HOME« or »${TMPDIR:-/tmp}«. To use the home itself or a directory outside of home / tmp, explicitly pass an absolute path. If the CWD is not (a child of) »--dir«, it will be set to »--dir«.'
-    [--only=[+#!?]rel_path[/] ...]="Relative path inside »--dir« to make accessible (writable). Using one or more »--only« options makes »--dir« itself an otherwise empty directory inside the sandbox. Can be supplied multiple times. Symlinks are copied (instead of bind-mounted). See »--on-missing«."
+    [--only=[+#!?]rel_path[/] ...]="Relative path inside »--dir« to make accessible (writable). Using one or more »--only« options makes »--dir« itself an otherwise empty directory inside the sandbox. Symlinks are copied (instead of bind-mounted)."
     [--only-glob=[#!?]glob ...]="Same as »--only«, but with glob patterns instead of literal paths. The patterns are evaluated once at startup."
-    [--only-git=[#!?]N]="Same as »--only«, but with the paths read from the output of »git ls-files --cached« in the »--dir«. With »N != 0«, the paths are truncated after the Nth slash (»--only-git=1« thus uses top-level file/dir names). "
-    [--hide=[+#!?]rel_path[/] ...]="Relative path inside »--dir« to make inaccessible. Can be supplied multiple times. Does not support symlinks. See »--on-missing«."
+    [--only-git=[#!?]N]="Same as »--only«, but with the paths read from the output of »git ls-files --cached« in the »--dir«. With »N != 0«, the paths are truncated after the Nth slash (»--only-git=1« thus uses top-level file/dir names). This expects a ».git« directory in »--dir«."
+    [--hide=[+#!?]rel_path[/] ...]="Relative path inside »--dir« to make inaccessible. Does not support symlinks."
     [--hide-glob=[#!?]glob ...]="Same as »--hide«, but with glob patterns instead of literal paths. The patterns are evaluated once at startup."
-    [--read-only=[+#!?]rel_path[/] ...]="Relative path inside »--dir« to make read-only. Can be supplied multiple times. Does not support symlinks. See »--on-missing«."
+    [--overlay=[+#!?]rel_path[/] ...]="Relative path inside »--dir« to cover with a tmpfs overlay. The sandbox can write to it, but modifications will be visible outside the sandbox and do not persist. Modifying the path outside the sandbox will probably lead to unexpected behavior. Does not support symlinks."
+    [--overlay-glob=[#!?]glob ...]="Same as »--overlay«, but with glob patterns instead of literal paths. The patterns are evaluated once at startup."
+    [--read-only=[+#!?]rel_path[/] ...]="Relative path inside »--dir« to make read-only. Does not support symlinks."
     [--read-only-glob=[#!?]glob ...]="Same as »--read-only«, but with glob patterns instead of literal paths. The patterns are evaluated once at startup."
-    [--fs=type:[[+#!?]source[/]:]target ...]="Additional custom filesystem mounts. Can be supplied multiple times. Supports a subset (»bind«, »ro-bind«, »dev-bind«, »symlink«, »tmpfs«, »proc«, »dev«, »dir«) of »bwrap«'s mount options with colons to separate the arguments (e.g. »--fs=tmpfs:/tmp« or »--fs=bind:/host/path:/container/path«). Relative paths are relative to »--dir«, paths starting with »~/« are relative to »"'$HOME'"«. Source paths (where required) that do not exist are considered an error (except with »symlink«). Order for mounts with different targets does not matter, as all mounts are sorted by target path. Later »--fs« mounts with the same target overwrite earlier ones. Use type »none« to remove mounts created by default or other options. Does not support symlinks. See »--on-missing«."
+    [--fs=type:[[+#!?]source[/]:]target ...]="Additional custom filesystem mounts. Supports a subset of »bwrap«'s mount options (»bind«, »ro-bind«, »dev-bind«, »tmp-overlay« (with a single »overlay-src« as »source«), »symlink«, »tmpfs«, »proc«, »dev«, »dir«) with colons to separate the arguments (e.g. »--fs=tmpfs:/tmp« or »--fs=bind:/host/path:/container/path«). Relative paths are relative to »--dir«, paths starting with »~/« are relative to »"'$HOME'"«. Source paths (where required) that do not exist are considered a conflict (except with »symlink«). Order for mounts with different targets does not matter, as all mounts are sorted by target path. Later »--fs« mounts with the same target overwrite earlier ones. »--fs« options replace mounts created by default or by other options. Use type »none« to remove mounts. Does not support symlinks (other than with type »symlink«)."
 
     [-n, --nix]="Allow access to the Nix daemon (and read-only to the Nix DBs). Read access to all of »/nix/store« is always granted."
 
@@ -35,10 +37,9 @@ declare -g -A allowedArgs=(
     [-p, --strict-profile]="Strictly only use the »--profile« for environment variables and file system contents (»/etc«, and for non-NixOS also »/bin«, »/lib(64)«, and »/usr«), unless overwritten by other options. In »--nixos« mode, this sources »/etc/set-environment«; otherwise, »/etc/environment« is parsed. Without »--strict-profile«, environment variables are inherited and a minimal »/etc« is constructed from ambient information to create a working sandbox environment. With »--strict-profile«, it is the callers responsibility to provide a »--profile« that is suitable in terms of functionality and isolation. Its »/etc« should at least have »passwd« and »group« and a »resolv.conf« as files (or symlinks). Those files (or their targets) will be shadowed by bind-mounted files with minimal correct settings. The files may also be symlinks, in which case the (direct) target files will be shadowed. Eposes the caller's UID+GID, and the env vars USER, GROUP, HOME, TERM and TERM_PROGRAM."
     # TODO?: ditch support for --no-strict-profile and require that blinders is built with a boundProfile?
     [--env=[#!?]env.sh]="Path to a shell script that is sourced in the container before executing the command, to set up environment variables. The path has to be valid inside the container, for example a path in »--dir« or the nix store. If no explicit PROGRAM is given, this will be passed to the shell as »--rcfile« (instead of sourcing it before starting the shell)."
-    [--var=NAME[=[VALUE]] ...]="Set an environment variable in the container.
-    Can be supplied multiple times. Later options with the same »NAME« overwrite earlier ones. If no »=VALUE« is given, then it is inherited from the host environment (which is different from setting an empty value). These may overwrite variables set by »blinders« itself (depending on other options), but are applied early in the container, before »--profile«/»/etc/environment«/»--env«."
+    [--var=NAME[=[VALUE]] ...]="Set an environment variable in the container. Later options with the same »NAME« overwrite earlier ones. If no »=VALUE« is given, then it is inherited from the host environment (which is different from setting an empty value after »=«). These may overwrite variables set by »blinders« itself (depending on other options), but are applied early in the container, before »--profile«/»/etc/environment«/»--env«."
 
-    [--on-missing=action]="Action to take when the source path of one or more default mounts is missing (or otherwise invalid). Valid choices are »abort«/»!« (exit with error, the default for »--on-missing«), »warn«/»#« (print warning and continue without that mount) and »ignore«/»?« (silently continue without that mount). The same options may also be specified for explicitly requested mounts (»--hide[-glob]«, »--read-only[-glob]«, »--fs«) and other options (»--profile«, »--env«) via a prefix of »!«, »#« or »?« in their argument. Here, the default is the first symbol listed in the respective argument's description, and an additional action »+« may be available, which creates the source (as dir if the path ends in »/« or regular file otherwise) and otherwise behaves like »error«. When passing unknown values as arguments, prefix them explicitly."
+    [--on-missing=action]="Action to take when the source path of one or more default mounts is missing (or otherwise invalid). Valid choices are »abort«/»!« (the default), »warn«/»#« and »ignore«/»?«. See below for their semantics."
     [-q, --quiet]="Suppress non-error messages."
 
     [--nsjail]="Use »nsjail« instead of »bwrap« as the tool to set up namespacing and mounts. This is only partially implemented."
@@ -47,37 +48,53 @@ declare -g -A allowedArgs=(
 )
 details='' ; if [[ @{args.boundArgs:-} ]] ; then
     details+=$'Bound arguments:\n    '"$( printf ' %q' "@{args.boundArgs[@]}" )"$'\n'
-fi ; details+='
+fi ; details+="
+Argument format:
+    Many options' values, especially those that specify or require paths, may be prefixed with a special symbol that adjusts the behavior on conflicts. \
+    Possible conflicts are an earlier option or one with higher precedence already specifying a mount point, sources paths not existing, globs not matching anything, and more. \
+    When passing unknown values as arguments, explicitly prefix them with a symbol. \
+    The possible symbols are listed with each option, where the first listed choice is the default. Their semantics are:
+      - »!« (abort): Print an error and do not run »PROGRAM« / create the sandbox.
+      - »#« (warn): Print a warning to stderr and proceed like (ignore).
+      - »?« (ignore): Silently continue as if the option (or internal mount) had not been specified.
+      - »+« (create): Where applicable, create the source if missing (as dir if the path ends in »/« or regular file otherwise) and otherwise behave like (abort).
+
+    Options whose description ends in »...«  can be supplied multiple times. \
+    The order generally matters, and passing an empty value (but do keep the »=«, e.g. »--option=«) clears all previous options of the same name. \
+    Where paths are specified, the order matters for options with te same name: Earlier ones are applied, later ones create a conflict (see above). \
+    Path options with different names are applied according to precedence: »hide« > »overlay« > »read-only« > »only«, with wildcards applied right after their respective explicit options. \
+    Later / lower precedence options with the same path value again create conflicts (see above).
+
 Description:
-    Blinders provides a convenient command line interface to create containerized environments that expose only a primary directory, like a source code repository, from the host, but still allow programs inside the sandbox to work effectively (with functioning terminal and/or graphics).
-    The main use case is for AI, especially for agents. The agent is supposed to work on one project, and should not be able to read, and definitely not write, anything outside of that project.
+    Blinders provides a convenient command line interface to create containerized environments that expose only a primary directory, like a source code repository, from the host, but still allow programs inside the sandbox to work effectively (with functioning terminal and/or graphics). \
+    The main use case is for AI, especially for agents. The agent is supposed to work on one project, and should not be able to read, and definitely not write, anything outside of that project. \
     Ideally, any changes made inside the sandbox can be clearly be detected, for example by using git and »--hide«ing the ».git« directory.
 
-    Blinders uses bubblewrap for general namespacing, nsjail for syscall filtering, slirp4netns for networking, and a Nix(OS) for a functioning user space.
-    Without arguments, blinders grants access only to the current directory, while preventing local network access and blocking all but a curated list of system calls.
+    Blinders uses bubblewrap for general namespacing, nsjail for syscall filtering, slirp4netns for networking, and a Nix(OS) for a functioning user space. \
+    Without arguments, blinders grants access only to the current directory, while preventing local network access and blocking all but a curated list of system calls. \
     Optionally, more directories can be bound into the sandbox (or additional files/folders be protected), the network restrictions be lifted, the system call filtering be adjusted, or access to graphical output or compute be granted.
 
-    As the sandbox is meant to run untrusted code or agents, one needs to review all changes made inside the sandbox, before executing any code or using any potentially harmful files that were exposed to the sandbox outside of it.
-    Git can be an effective tool for this, as long as diffs/changes are reviewed carefully, and the ».git« directory protected with »--hide« or »--read-only« (see examples).
-    Consider, though, that Git, by design, does not track changes to `.gitignore`d files, and that it does not track file permission changes (so the sandbox could make all files world-writable, for example).
+    As the sandbox is meant to run untrusted code or agents, one needs to review all changes made inside the sandbox, before executing any code or using any potentially harmful files that were exposed to the sandbox outside of it. \
+    Git can be an effective tool for this, as long as diffs/changes are reviewed carefully, and the ».git« directory protected with »--hide« or »--read-only« (see examples). \
+    Consider, though, that Git, by design, does not track changes to ».gitignore«d files, and that it does not track file permission changes (so the sandbox could make all files world-writable, for example). \
     Permissions on the parent directory, and careful, project specific use of »--only-git« may help, but also have limitations and drawbacks (like making many files/directories unmovable mount points, and not updating automatically).
 
-    Another important consideration with sandboxes and containers is the execution environment to provide on the inside, besides access to the intentionally mutable primary directory.
-    By default, blinders exposes a subset of the host environment.
-    As this can only rely on vague heuristics of what is necessary and safe to expose, it is much better to use a dedicated environment.
+    Another important consideration with sandboxes and containers is the execution environment to provide on the inside, besides access to the intentionally mutable primary directory. \
+    By default, blinders exposes a subset of the host environment. \
+    As this can only rely on vague heuristics of what is necessary and safe to expose, it is much better to use a dedicated environment. \
     Blinders uses (stripped down) NixOS configurations for this, either system wide (»/etc/blinders/system-profile«) or passed explicitly (as »--profile« and/or »--env« per project).
 
-    Blinders comes with Nix tooling to conveniently set custom profiles and security settings per (Nix) project.
+    Blinders comes with Nix tooling to conveniently set custom profiles and security settings per (Nix) project. \
     Especially »mkBlindersInitApp« can be used to bind custom (NixOS) profile configuration, pre-existing dev-shell environments, (security) options, and sandbox-only state directories to blinders as a pre-configured CLI command, which can be used directly or configured as agent terminal environment in VSCode (and in principle other editors).
 
-
+"'
 Example usage:
 
     Run a shell in a container with access to the current directory and the Wayland display. Can run Firefox, Chrome, VSCode, etc.:
         $ blinders --wayland --tty -- bash
 
     Open a shell for an AI agent, with explicit (but opportunistic) security settings:
-        $ blinders --dir="${workspaceFolder}" --nix --nixos --only-git=#1 --hide=+./.blinders/ --profile=?./.blinders/profile --fs=bind:+./.blinders/home/bash_history:~/.bash_history --hide-glob=?.vscode/ --hide-glob=?.env --read-only-glob=#**/.git/ --tty -- bash
+        $ blinders --dir="${workspaceFolder}" --nix --nixos --only-git=#1 --hide=+./.blinders/ --profile=?./.blinders/profile --fs=bind:+./.blinders/home/bash_history:~/.bash_history --hide-glob=?.vscode/ --hide-glob=?.env --overlay-glob=#**/.git/ --tty -- bash
 
     To obtain a project-specific blinders profile:
         `flake.nix`: outputs.packages.${system}.my-profile = pkgs.mkBlindersProfile { inherit inputs; config.environment.systemPackages = [ pkgs.foo ]; };
@@ -92,7 +109,7 @@ Example usage:
         $ blinders --env=./.blinders/env --profile=/etc/blinders/system-profile
 
     Or bind arguments, including a profile and/or env, to a custom binders variant:
-        `flake.nix`: outputs.packages.${system}.my-blinders = pkgs.blinders.override (old: { context.args.boundArgs = [ "--tty" "--nix" "--nixos" "--profile=${outputs.packages.${system}.my-profile}" "--env=${lib.fun.print-dev-env outputs.packages.${system}.dev-shell}" "--fs=bind:?./.blinders/home/bash_history:~/.bash_history" "--hide-glob=?.env" "--read-only-glob=#**/.git/" ]; });
+        `flake.nix`: outputs.packages.${system}.my-blinders = pkgs.blinders.override (old: { context.args.boundArgs = [ "--tty" "--nix" "--nixos" "--profile=${outputs.packages.${system}.my-profile}" "--env=${lib.fun.print-dev-env outputs.packages.${system}.dev-shell}" "--fs=bind:?./.blinders/home/bash_history:~/.bash_history" "--hide-glob=?.env" "--overlay-glob=#**/.git/" ]; });
         $ nix run .#my-blinders --
 
     All of that can be combined with »mkBlindersInitApp« (even this minimal example will pick up any packages added by your flake and include it s default dev shell environment):
@@ -111,7 +128,8 @@ Limitations:
 '
 
 invalidArgs=2 ; missingFile=3
-exitCodeOnError=$invalidArgs shortArgsAre=FlAgS dupOptsAre=lists generic-arg-parse @{args.boundArgs:+"@{args.boundArgs[@]}"} "$@" || exit
+#set -x ; declare -p COLUMNS ; exit
+exitCodeOnError=$invalidArgs shortArgsAre=FlAgS dupOptsAre=lists dupEmptyResets=1 generic-arg-parse @{args.boundArgs:+"@{args.boundArgs[@]}"} "$@" || exit
 shortArgsAre=FlAgS generic-arg-help "$binaryName" "$argvDesc" "$description" "$details" || exit
 exitCodeOnError=$invalidArgs generic-arg-verify || exit
 
@@ -147,7 +165,7 @@ function add-env { # 1: name, 2: value
     environment[$1]=$2
 }
 declare -A targets=( ) # type to apply to a target path (e.g. --bind, --ro-bind, --dir)
-declare -A sources=( ) # source path for targets that require one (e.g. --bind, --ro-bind, --file), indexed by target path
+declare -A sources=( ) # source path for targets that require one (e.g. --bind, --file, --tmp-overlay), indexed by target path
 declare -A missing=( ) # source paths that do not exist, indexed by target path
 declare -A duplicates=( ) # target paths that have more than one assignment
 function add-if-exists { [[ $2 == /* && -e $2 ]] && add-mount "$@" ; }
@@ -202,7 +220,9 @@ function linearize {
     # Sort (+translate)
     while IFS= read -r -d '' target ; do
         if [[ ! ${args[nsjail]:-} ]] ; then
-            if [[ ${sources[$target]:-} ]] ; then
+            if [[ ${targets[$target]:-} == --tmp-overlay ]] ; then
+                bwrap+=( --overlay-src "${sources[$target]}" --tmp-overlay "$target" )
+            elif [[ ${sources[$target]:-} ]] ; then
                 bwrap+=( "${targets[$target]}" "${sources[$target]}" "$target" )
             else
                 bwrap+=( "${targets[$target]}" "$target" )
@@ -243,14 +263,13 @@ function linearize {
     done < <( printf '%s\0' "${!targets[@]}" | sort -z )
 
     for name in "${!environment[@]}" ; do
-        if [[ ${args[nsjail]:-} ]] ; then
-            seccomp+=( --env "$name=${environment[$name]}" )
-        else
-            bwrap+=( --setenv "$name" "${environment[$name]}" )
-        fi
+        nsjail+=( --env "$name=${environment[$name]}" )
+        bwrap+=( --setenv "$name" "${environment[$name]}" )
     done
 
     unset -f add-if-exists add-mount add-env linearize
+
+    if [[ -t 0 ]]; then prepend_trap 'while read -r -t 0.01 -N 1 ; do : ; done' EXIT ; fi # A dumb terminal may inject crafted replies to ANSI escape sequence requests made from the sandbox into the host tty, so *try to* slurp those up before returning. A real solution would require escape sequence filtering outside the sandbox.
 }
 
 function source-env { # 1: spec
@@ -260,7 +279,8 @@ function source-env { # 1: spec
         '#'*) path=${path:1} ;& # fallthrough
         *) prefix='[ -e '"$( printf '%q' "$path" )"' ] && ' ; suffix=' || echo '"$( printf '%q' "--env file »$path« missing" )"' >&2 ' ;;
     esac
-    printf %s%s%s "$prefix" '. '"$( printf '%q' "$path" )" "$suffix"
+    # ».« instead of »source« works in more shells
+    printf %s%s%s "$prefix" .' '"$( printf '%q' "$path" )" "$suffix"
 }
 
 
@@ -280,11 +300,6 @@ esac
 if [[ ${#argv[@]} == 0 ]] ; then
     if [[ ! -v args[tty] ]] ; then args[tty]=1 ; fi
     if [[ ${args[env]:-} ]] ; then
-        #rcDir=$( mktemp -p $tmp -d rcfile.XXXXXXXXXX )
-        #printf '%s\n' '[ -n "$PS1" ] && [ -e ~/.bashrc ] && source ~/.bashrc' 'shopt -u expand_aliases' "$( source-env "${args[env]}" )" 'shopt -s expand_aliases' >$rcDir/wrapper
-        #add-mount --ro-bind $rcDir /tmp/${rcDir##*/}/wrapper
-        #add-mount --ro-bind ${args[env]} /tmp/${rcDir##*/}/env
-        #argv=( "$SHELL" --rcfile /tmp/${rcDir##*/}/wrapper )
         printf '%s\n' '[ -n "$PS1" ] && [ -e ~/.bashrc ] && source ~/.bashrc' 'shopt -u expand_aliases' "$( source-env "${args[env]}" )" 'shopt -s expand_aliases' >$tmp/rcfile
         add-mount --ro-bind $tmp/rcfile /tmp/rcfile
         argv=( "$SHELL" --rcfile /tmp/rcfile )
@@ -321,39 +336,27 @@ bwrap=( "@{pkgs.bubblewrap!getExe}" )
 nsjail=( "@{pkgs.nsjail!getExe}" --mode e ) # ONCE vs EXECVE?
 #nsjail+=( --env "BLE_DISABLED=1" ) # ble.sh does weird things that break terminal input (--tty fixes that)
 if [[ ${args[trace]:-} ]] ; then nsjail+=( --verbose ) ; else nsjail+=( --quiet ) ; fi
-# seccomp-related nsjail flags can be added to »seccomp« regardless of mode:
-if [[ ${args[nsjail]:-} ]] ; then
-    declare -n seccomp=nsjail
-else
-    seccomp=( "${nsjail[@]}" ) # bwrap does all this:
-    seccomp+=( --keep_env --keep_caps --skip_setsid --disable_rlimits )
-    seccomp+=( --disable_clone_newnet --disable_clone_newuser --disable_clone_newns --disable_clone_newpid --disable_clone_newipc --disable_clone_newuts --disable_clone_newcgroup ) # spellchecker: disable-line
-    seccomp+=( --disable_proc ) # --bindmount /
-fi
-function launch {
+preExec="${args[trace]+set -x ; }" # shell commands to run just before exec'ing the user command
+function launch { # expects to be run in a subshell
     #declare -p bwrap nsjail seccomp
-    rc='' # ».« instead of »source« works in more shells
-    if [[ ${args[strict-profile]:-} && ${args[nixos]:-} ]] ; then rc+='. /etc/set-environment || exit ; ' ; fi
-    if [[ ${args[env]:-} ]] ; then rc+="$( source-env "${args[env]}" ) ; " ; fi
+    if [[ ${args[strict-profile]:-} && ${args[nixos]:-} ]] ; then preExec+='. /etc/set-environment || exit ; ' ; fi
+    if [[ ${args[env]:-} ]] ; then preExec+="$( source-env "${args[env]}" ) ; " ; fi
     # With --new-session, we may need a new controlling terminal:
     if [[ ${args[tty]:-} ]] ; then # (note that this is purely a usability fix, not a security improvement)
-        argv=( @{pkgs.util-linux}/bin/script -q /dev/null -c "$rc exec $( printf '%q ' "${argv[@]}" )" )
-    elif [[ $rc ]] || ( [[ ${argv[0]} != /* ]] && [[ ${args[nsjail]:-} || ${args[seccomp-default]:-} || ${argv_seccomp:-} ]] ) ; then
+        argv=( @{pkgs.util-linux}/bin/script -q /dev/null -c "$preExec exec $( printf '%q ' "${argv[@]}" )" )
+    elif [[ $preExec ]] || ( [[ ${argv[0]} != /* ]] && [[ ${args[nsjail]:-} || ${args[seccomp-default]:-} || ${argv_seccomp:-} ]] ) ; then
         # nsjail requires the command to be an absolute path
-        argv=( /bin/sh -c "$rc exec $( printf '%q ' "${argv[@]}" )" )
+        argv=( /bin/sh -c "$preExec exec $( printf '%q ' "${argv[@]}" )" )
     fi
     if [[ ${args[nsjail]:-} ]] ; then
         cmd=( "${nsjail[@]}" -- "${argv[@]}" )
-    elif [[ ${argv_seccomp:-} || ${args[seccomp-default]:-} || ${args[no-seccomp-default]:-} ]] ; then
-        cmd=( "${bwrap[@]}" -- "${seccomp[@]}" -- "${argv[@]}" )
     else
         cmd=( "${bwrap[@]}" -- "${argv[@]}" )
     fi
     if [[ ${args[dry-run]:-} ]] ; then
         printf '%q ' "${cmd[@]}" ; echo
     else
-        if [[ -t 0 ]]; then prepend_trap 'while read -r -t 0.1 -N 1 ; do : ; done' EXIT ; fi # A dumb terminal may inject crafted replies to ANSI escape sequence requests made from the sandbox into the host tty, so *try to* slurp those up before returning. A real solution would require escape sequence filtering outside the sandbox.
-        "${cmd[@]}" # last command, but no exec
+        exec "${cmd[@]}" # last command, exec to replace subshell
     fi
 }
 
@@ -368,21 +371,34 @@ if [[ ${args[host-net]:-} ]] ; then
     nsjail+=( --disable_clone_newnet ) # spellchecker: disable-line
 fi
 bwrap+=( --die-with-parent ) # AI says: nsjail has that by default in execve mode, but not in once mode, and it is generally desirable to avoid orphaned containers
-bwrap+=( --new-session ) # Prevent the sandbox from having access to a terminal that is owned by the calling user. (nsjail does something like similar unless disabled via --skip_setsid)
-if false ; then
-    seccomp+=( --keep_caps )
-else
-    bwrap+=( --cap-drop ALL ) # also the default, unless later options overwrite it
-fi
+bwrap+=( --new-session ) # Prevent the sandbox from having access to a terminal that is owned by the calling user. (nsjail does something similar unless disabled via --skip_setsid)
 if true ; then
     nsjail+=( --disable_rlimits )
 else
-    : # TODO: resource limits
+    : # resource limits
 fi
 bwrap+=( --hostname blinders )
 nsjail+=( --hostname blinders )
-bwrap+=( --gid ${GROUPS[0]} )
-nsjail+=( --group ${GROUPS[0]} )
+if [[ ${args[host-net]:-} ]] ; then
+    bwrap+=( --cap-drop ALL ) # default, unless later options overwrite it
+    bwrap+=( --gid ${GROUPS[0]} )
+    nsjail+=( --group ${GROUPS[0]} )
+else
+    # Start as root (UID 0) for iptables setup, then switch to unprivileged user:
+    nsjail+=( --keep_caps )
+    bwrap+=( --cap-add CAP_NET_ADMIN --cap-add CAP_SETUID --cap-add CAP_SETGID )
+    bwrap+=( --uid 0 --gid 0 )
+    nsjail+=( --user 0 --group 0 )
+    argv=(
+        @{pkgs.util-linux}/bin/setpriv
+        --reuid=$UID --regid=${GROUPS[0]} # requires newuidmap below
+        --clear-groups
+        #--bounding-set -all # not permitted
+        --inh-caps -all --ambient-caps -all
+        -- "${argv[@]}"
+    )
+fi
+# Both bwrap and nsjail set NO_NEW_PRIVS: bwrap always, nsjail by default.
 
 
 ## Filesystem
@@ -460,11 +476,11 @@ if [[ ${args[strict-profile]:-} ]] ; then
     if [[ ! ${args[host-net]:-} ]] ; then
         write-to-etc resolv.conf "nameserver 10.0.2.3"$'\n' || true
     fi
-    write-to-etc passwd "$USER:x:$UID:${GROUPS[0]}::$HOME:/run/current-system/sw/bin/bash"$'\n' || true
+    write-to-etc passwd "$USER:x:$UID:${GROUPS[0]}::$HOME:${SHELL:-/run/current-system/sw/bin/bash}"$'\n' || true
     write-to-etc group "${GROUP:-$( id -ng )}:x:${GROUPS[0]}:"$'\n'"nogroup:x:65534:"$'\n' || true
 
 else # generally inherit from the host, but overwrite with some things from the profile if they exist there
-    seccomp+=( --keep_env )
+    nsjail+=( --keep_env )
     getent passwd "$USER" 2>/dev/null >$tmp/passwd
     add-mount --ro-bind $tmp/passwd /etc/passwd
     getent group "${GROUPS[0]}" 2>/dev/null >$tmp/group
@@ -553,13 +569,12 @@ else
     dir=$( realpath -s -m "${dir%/}" ) || exit
 fi
 if [[ $dir != "$PWD" && $PWD != "$dir"/* ]] ; then
-    bwrap+=( --chdir "$dir" ) ; seccomp+=( --cwd "$dir" )
+    bwrap+=( --chdir "$dir" ) ; nsjail+=( --cwd "$dir" )
 else
-    bwrap+=( --chdir "$PWD" ) ; seccomp+=( --cwd "$PWD" )
+    bwrap+=( --chdir "$PWD" ) ; nsjail+=( --cwd "$PWD" )
 fi
-declare -A dirChildren
 
-for type in only hide read-only ; do # --*-glob
+for type in only hide overlay read-only ; do # --*-glob
     declare -a argv_${type//-/_} ; declare -n argv_type=argv_${type//-/_} ; declare -n argv_type_glob=argv_${type//-/_}_glob
     if [[ ! ${args[$type-glob]:-} ]] ; then continue ; fi
     for glob in "${argv_type_glob[@]}" ; do
@@ -594,46 +609,46 @@ function ensure-source { # 1: path, 2: reason, 3: report
     [[ -e $absPath ]] || $report "$reason »$path« does not exist." $missingFile 'skipping' "$absPath"${asDir:+/} || return 1
 }
 
-declare -A uniq=( ) ; for path in "${argv_hide[@]}" ; do
-    pop-report-level create path "$path"
-    if [[ $path == /* ]] ; then $report "Path to --hide »$path« is absolute. It should be relative (to --dir)." $invalidArgs 'skipping' ; continue ; fi
-    ensure-source "$path" "Path to --hide" $report || continue
-    type=$( stat -c %F -- "$absPath" ) || exit ; case "$type" in
-        'directory') type=dir ;; 'regular file'|'regular empty file') type=reg ;; 'block special file') type=blk ;; 'character special file') type=chr ;; 'fifo') type=fifo ;; 'socket') type=sock ;;
-        *) $report "Unsupported file type for --hide: $path => $type." $invalidArgs 'skipping' ; continue ;;
-    esac
-    if [[ ${uniq[$absPath]:-} ]] ; then continue ; fi ; uniq[$absPath]=1
-    dirChildren[$absPath]=1
-    add-mount --ro-bind /run/systemd/inaccessible/$type "$absPath"
-done
+declare -A usedPaths=( ) # Mapping<path -> option_name>: when the same path is specified multiple times, only consider the strictest one: hide > overlay > read-only > only
 
-declare -A uniq=( ) ; for path in "${argv_read_only[@]}" ; do
-    pop-report-level create path "$path"
-    if [[ $path == /* ]] ; then $report "Path to make --read-only »$path« is absolute. It should be relative (to --dir)." $invalidArgs 'skipping' ; continue ; fi
-    ensure-source "$path" "Path to make --read-only" $report || continue
-    if [[ -L $absPath ]] ; then $report "Unsupported file type for --read-only: $path => symlink." $invalidArgs 'skipping' ; continue ; fi
-    if [[ ${uniq[$absPath]:-} ]] ; then continue ; fi ; uniq[$absPath]=1
-    if [[ ${dirChildren[$absPath]:-} ]] ; then $report "Path »$path« is specified as both --hide and --read-only." $invalidArgs 'former takes precedence' ; continue ; fi ; dirChildren[$absPath]=1
-    add-mount --ro-bind "$absPath" "$absPath"
-done
-
-if [[ ! ${args[only]:-} ]] ; then
-    add-mount --bind "$dir" "$dir"
-else
-    add-mount --tmpfs "$dir"
-    declare -A uniq=( ) ; for path in "${argv_only[@]}" ; do
-        pop-report-level create path "$path"
-        if [[ $path == /* ]] ; then $report "--only path »$path« is absolute. It should be relative (to --dir)." $invalidArgs 'skipping' ; continue ; fi
-        ensure-source "$path" "--only path" $report || continue
-        if [[ ${uniq[$absPath]:-} ]] ; then continue ; fi ; uniq[$absPath]=1
-        if [[ ${dirChildren[$absPath]:-} ]] ; then $report "Path »$path« is specified as both --hide or --read-only and --only."  $invalidArgs 'former takes precedence' ; continue ; fi ; dirChildren[$absPath]=1
-        if [[ -L $absPath ]] ; then
-            add-mount --symlink "$( readlink "$absPath" )" "$absPath"
+for type in hide overlay read-only only ; do
+    if [[ $type == only ]] ; then
+        if [[ ${args[only]:-} ]] ; then
+            add-mount --tmpfs "$dir"
         else
-            add-mount --bind "$absPath" "$absPath"
+            add-mount --bind "$dir" "$dir" ; continue
         fi
+    fi
+    declare -n argv_type=argv_${type//-/_}
+    for path in "${argv_type[@]}" ; do
+        pop-report-level create path "$path"
+        if [[ $path == /* ]] ; then $report "Path for --$type »$path« is absolute. It should be relative (to --dir)." $invalidArgs 'skipping' ; continue ; fi
+        ensure-source "$path" "Path for --$type" $report || continue
+
+        if [[ $type == hide ]] ; then
+            type=$( stat -c %F -- "$absPath" ) || exit ; case "$type" in
+                'directory') type=dir ;; 'regular file'|'regular empty file') type=reg ;; 'block special file') type=blk ;; 'character special file') type=chr ;; 'fifo') type=fifo ;; 'socket') type=sock ;;
+                *) $report "Unsupported file type for --hide: $path => $type." $invalidArgs 'skipping' ; continue ;;
+            esac
+            add-mount --ro-bind /run/systemd/inaccessible/$type "$absPath"
+        elif [[ $type == overlay || $type == read-only ]] ; then
+            if [[ -L $absPath ]] ; then $report "Unsupported file type for --$type: $path => symlink." $invalidArgs 'skipping' ; continue ; fi
+            if [[ $type == overlay ]] ; then
+                add-mount --tmp-overlay "$absPath" "$absPath"
+            else # $type == read-only
+                add-mount --ro-bind "$absPath" "$absPath"
+            fi
+        else # $type == only
+            if [[ -L $absPath ]] ; then
+                add-mount --symlink "$( readlink "$absPath" )" "$absPath"
+            else
+                add-mount --bind "$absPath" "$absPath"
+            fi
+        fi
+
+        if [[ ${usedPaths[$absPath]:-} ]] ; then $report "Path for --$type »$path« also specified as --${usedPaths[$absPath]}, which takes precedence." $invalidArgs 'former takes precedence' ; continue ; fi ; usedPaths[$absPath]=$type
     done
-fi
+done
 
 for fs in "${argv_fs[@]}" ; do
     type=${fs%%:*} ; rest=${fs/$type:/} ; if [[ $rest == *:* ]] ; then source=${rest%%:*} target=${rest#*:} ; else source= target=$rest ; fi
@@ -646,7 +661,7 @@ for fs in "${argv_fs[@]}" ; do
         unset targets[$target] ; unset missing[$target] ; unset sources[$target] ; unset duplicates[$target]
     fi
     case $type in
-        bind|ro-bind|dev-bind)
+        bind|ro-bind|dev-bind|tmp-overlay)
             if [[ $report != ${args[on-missing]} ]] ; then
                 ensure-source "$source" "Source path for --fs" $report && source=$absPath || continue
             else source=$( cd "$dir" && realpath -s -m "$source" ) || exit ; fi ;& # fallthrough
@@ -723,14 +738,21 @@ if [[ ${argv_seccomp:-} || ${args[seccomp-default]:-} || ${args[no-seccomp-defau
     if [[ ${args[seccomp-fallback]:-} ]] ; then
         seccomp_string+="DEFAULT ${args[seccomp-fallback]:-} "
     fi
-    seccomp+=( --seccomp_string "${seccomp_string% }" )
+    nsjail+=( --seccomp_string "${seccomp_string% }" )
+
+    if [[ ! ${args[nsjail]:-} ]] ; then
+        <<<"$seccomp_string" @{pkgs.kafel-cli!getExe} >$tmp/seccomp.bpf || exit
+        exec {seccomp_fd}< $tmp/seccomp.bpf || exit # buffer for later read
+        bwrap+=( --seccomp $seccomp_fd )
+        #later: bwrap "${bwrap[@]}"
+    fi
 fi
 
 
 ## Network Filtering
 
 if [[ ${args[host-net]:-} || ${args[dry-run]:-} ]] ; then
-    linearize || exit ; launch ; exit
+    linearize || exit ; ( launch ) ; exit
 fi
 
 if [[ ${args[nsjail]:-} ]] ; then
@@ -738,36 +760,20 @@ if [[ ${args[nsjail]:-} ]] ; then
     # nsjail directly supports »pasta« (which does basically the same as »slirp4netns«), but the firewall rules would need to be set up.
 fi
 
-# »firejail« has a »--netfilter« option, but that is currently ignored by firejail on NixOS (https://github.com/netblue30/firejail/issues/6637).
-
-# So we combine bwrap with slirp4netns.
 # Need to: start but pause bwrap, attach slirp4netns to the bwrap child, configure iptables, resume the bwrap child
 
-exec {json_status_fd}<> <(:)
-bwrap+=( --json-status-fd $json_status_fd )
-exec {bwrap_wait_fd}<> <(:)
-bwrap+=( --block-fd $bwrap_wait_fd )
-linearize || exit ; launch & bwrap_pid=$!
-prepend_trap '[[ ! $bwrap_pid ]] || kill $bwrap_pid 2>/dev/null || true' EXIT
-
-# Read JSON status line by line until we find child-pid
-child_pid= ; while read -r line <&${json_status_fd}; do
-    child_pid=$( echo "$line" | jq -r '."child-pid"' 2>/dev/null )
-    # { "child-pid", "cgroup-namespace", "ipc-namespace", "mnt-namespace", "net-namespace", "pid-namespace", "uts-namespace" }
-    if [[ $child_pid && $child_pid != "null" ]]; then break ; fi
-done
-
-beLoud=/dev/null ; if [[ ${args[trace]:-} ]] ; then beLoud=/dev/stdout ; fi
-slirp4netns=(
-    "@{pkgs.slirp4netns!getExe}"
-    --configure # configure interfaces in the sandbox (10.0.2.100/24, with gateway/host at 10.0.2.2, and DNS at 10.0.2.3)
-    --mtu=65520 # why?
-    --disable-host-loopback # do not allow the NAT on the host to connect to localhost (other than for DNS)
-    $child_pid tap0
-)
-"${slirp4netns[@]}" &>$beLoud & slirp_pid=$!
-prepend_trap 'kill $slirp_pid 2>/dev/null || true' EXIT
-
+if [[ ! ${args[ipv6]:-} ]] ; then ip6rules="
+*filter
+:OUTPUT DROP [0:0]
+COMMIT
+" ; else ip6rules="
+*filter
+:OUTPUT ACCEPT [0:0]
+-A OUTPUT -d ::1/128 -j REJECT
+-A OUTPUT -d fc00::/7 -j REJECT
+-A OUTPUT -d fe80::/10 -j REJECT
+COMMIT
+" ; fi # could also reject everything but 2000::/3 (publicly routable IPv6)
 ip4rules="
 *filter
 :OUTPUT ACCEPT [0:0]
@@ -781,23 +787,55 @@ ip4rules="
 -A OUTPUT -d 100.64.0.0/10 -j REJECT $( : carrier-grade NAT )
 COMMIT
 "
-if [[ ! ${args[ipv6]:-} ]] ; then ip6rules="
-*filter
-:OUTPUT DROP [0:0]
-COMMIT
-" ; else ip6rules="
-*filter
-:OUTPUT ACCEPT [0:0]
--A OUTPUT -d ::1/128 -j REJECT
--A OUTPUT -d fc00::/7 -j REJECT
--A OUTPUT -d fe80::/10 -j REJECT
-COMMIT
-" ; fi # could also reject everything but 2000::/3 (publicly routable IPv6)
 
-"@{pkgs.util-linux}"/bin/nsenter -t $child_pid -U --preserve-credentials -n bash -c "
-    @{pkgs.iptables}/bin/iptables-restore  ${args[trace]+-v} <<<$( printf '%q' "$ip4rules" ) || exit
-    @{pkgs.iptables}/bin/ip6tables-restore ${args[trace]+-v} <<<$( printf '%q' "$ip6rules" ) || exit
-" || exit
+# It seems to be non-deterministic whether nsenter is root or user inside the new user namespace (usually we are root, but for example `ls -al /proc/$child_pid/ns` before `nsenter` makes us the regular user). So to be safe, we do this on the main launch path, and need to delay dropping privileges:
+preExec+="@{pkgs.iptables}/bin/ip6tables-restore ${args[trace]+-v} <<<$( printf '%q' "$ip6rules" ) || exit ; "
+preExec+="@{pkgs.iptables}/bin/iptables-restore  ${args[trace]+-v} <<<$( printf '%q' "$ip4rules" ) || exit ; "
 
-echo go >&${bwrap_wait_fd} # let bwrap continue
+exec {json_status_fd}<> <(:)
+bwrap+=( --json-status-fd $json_status_fd )
+exec {exec_block_fd}<> <(:)
+bwrap+=( --block-fd $exec_block_fd )
+exec {userns_block_fd}<> <(:)
+bwrap+=( --userns-block-fd $userns_block_fd )
+exec {info_fd}<> <(:)
+bwrap+=( --info-fd $info_fd ) # redundant/unused, but mandated by --userns-block-fd
+
+linearize || exit ; launch & bwrap_pid=$!
+prepend_trap '[[ ! $bwrap_pid ]] || kill $bwrap_pid 2>/dev/null || true' EXIT
+
+child_pid=
+while true; do
+    if ! read -r -t 0.01 line <&${json_status_fd} 2>/dev/null ; then
+        if ! kill -0 $bwrap_pid 2>/dev/null; then # bwrap died
+            wait $bwrap_pid 2>/dev/null ; exit_code=$? ; bwrap_pid= ; exit $exit_code
+        fi
+        abort "bwrap failed to report child-pid" 1
+    fi
+    child_pid=$( echo "$line" | @{pkgs.jq}/bin/jq -r '."child-pid"' 2>/dev/null ) || abort "bwrap failed to report child-pid" 1
+    # { "child-pid", "cgroup-namespace", "ipc-namespace", "mnt-namespace", "net-namespace", "pid-namespace", "uts-namespace" }
+    if [[ $child_pid && $child_pid != "null" ]]; then break ; fi
+done
+exec {json_status_fd}>&-
+exec {info_fd}>&-
+
+# root's outside ID does not matter, it just needs to be allowed. The calling user should be identity-mapped:
+otherUID=$( @{pkgs.gnugrep!getExe} -oPm 1 "${USER//\[\]\.\^\$\*\+\?\{\}\(\)\|\[\]\\/\\&}"':\K\d+' </etc/subuid ) || exit
+otherGID=$( @{pkgs.gnugrep!getExe} -oPm 1 "${USER//\[\]\.\^\$\*\+\?\{\}\(\)\|\[\]\\/\\&}"':\K\d+' </etc/subgid ) || exit
+newuidmap "$child_pid"   0 "$otherUID" 1   $UID         $UID         1 || exit
+newgidmap "$child_pid"   0 "$otherGID" 1   ${GROUPS[0]} ${GROUPS[0]} 1 || exit
+echo go >&${userns_block_fd}
+
+beLoud=/dev/null ; if [[ ${args[trace]:-} ]] ; then beLoud=/dev/stdout ; fi
+slirp4netns=(
+    "@{pkgs.slirp4netns!getExe}"
+    --configure # configure interfaces in the sandbox (10.0.2.100/24, with gateway/host at 10.0.2.2, and DNS at 10.0.2.3)
+    --mtu=65520 # why?
+    --disable-host-loopback # do not allow the NAT on the host to connect to localhost (other than for DNS)
+    $child_pid tap0
+)
+"${slirp4netns[@]}" &>$beLoud & slirp_pid=$!
+prepend_trap 'kill $slirp_pid 2>/dev/null || true' EXIT
+
+echo go >&${exec_block_fd} # let bwrap continue
 wait $bwrap_pid ; exit_code=$? ; bwrap_pid= ; exit $exit_code

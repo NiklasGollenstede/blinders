@@ -14,9 +14,11 @@ in rec {
         devShell ? null, # Name of a package/devShell in `pkgs` to use as blinders »--env«.
         appName ? "init", # Name (not absolute output path) of the exported app (`nix run .#$appName -- ...`).
         addOutputs ? inputs?self.overlays, # Whether to add all packages exported by this flake (via overlays) to the blinders profile.
-        extraSetup ? pkgs: ":", # Shell snippet to run during the initialization of the blinders state, e.g. to create bind mount sources that ».args« reference. This runs inside the future blinders state dir, but outside any sandboxing.
+        extraSetup ? pkgs: ":", # Shell snippet to run during the initialization of the blinders state, e.g. to create bind mount sources that ».args« reference. This runs inside the future blinders state dir, but outside any sandboxing. The original working directory when the script was called is available as `$originalPWD`.
         description ? "Initialize blinders for this project.", # Description of the exported app.
-    }@extra: { apps = lib.fun.exportFromPkgs ((builtins.removeAttrs extra (lib.attrNames (lib.functionArgs mkBlindersInitApp))) // { inherit inputs; what = pkgs: let
+        pkgsConfig ? { }, pkgsApply ? pkgs: pkgs,
+    }@extra: { apps = lib.fun.exportFromPkgs ((lib.fun.onlyExtraArgs mkBlindersInitApp extra) // { inherit inputs; config = pkgsConfig; what = pkgs': let
+        pkgs = pkgsApply pkgs';
         profile = pkgs.mkBlindersProfile { inherit inputs; config = { _file = "${dirname}/blinders.nix#blindersInitApp"; imports = [ {
             imports = [ { _file = "blindersInitApp#config"; imports = [ config ]; } ];
             options.system.path = lib.mkOption { apply = env: env.override { ignoreSingleFileOutputs = true; }; }; # the below may add stuff to the system env that was not meant for that
@@ -27,19 +29,20 @@ in rec {
             "--nix" "--nixos" "--profile=!${profile}" (if devShell != null then "--env=!${env}" else null)
             "--read-only=!./.blinders/" # add "--hide=!./.blinders/" to args to completely hide it
             "--fs=bind:!./.blinders/home/bash_history:~/.bash_history"
-            "--read-only-glob=!**/.git/"
+            "--overlay-glob=!**/.git/"
         ]; });
         vsCodeSettings = ''
             "chat.disableAIFeatures": false,
             "chat.tools.terminal.terminalProfile.linux": {
                 "path": "''${workspaceFolder}/.blinders/bin/blinders",
-                "args": [ "--dir=''${workspaceFolder}" ],
+                "args": [ "--dir=''${workspaceFolder}", ],
             },
             "chat.tools.terminal.enableAutoApprove": true,
             "chat.tools.terminal.ignoreDefaultAutoApproveRules": true,
             "chat.tools.terminal.autoApprove": {
                 "/^/": { "approve": true, "matchCommandLine": true, },
             },
+	        "github.copilot.chat.additionalReadAccessPaths": [ "/nix/store", ],
         '';
     in { ${appName} = (pkgs.writeShellScriptBin "init" ''
         set -u -o pipefail # bash
@@ -57,6 +60,7 @@ in rec {
         shortArgsAre=flags generic-arg-help "$binaryName" "$argvDesc" "$description" "$details" || exit
         shortArgsAre=flags generic-arg-verify || exit
 
+        originalPWD="$PWD" # for extraSetup
         if [[ ''${args[root]:-} ]] ; then root=''${args[root]} ; else
             root=$( ${lib.fun.intoRepoDir} pwd ) || exit
         fi ; cd "$root" || exit
@@ -96,8 +100,8 @@ in rec {
         name ? "blinders-profile", # Name of the exported package (`nix build .#$name -- ...`).
         config ? { }, # NixOS configuration to apply for all systems.
     ... }@args: { packages = lib.genAttrs systems (localSystem: let
-        system = lib.inst.mkNixosConfiguration ((builtins.removeAttrs args [ "systems" "config" ]) // {
-            inherit name;
+        system = lib.inst.mkNixosConfiguration ((lib.fun.onlyExtraArgs mkBlindersProfiles args) // {
+            inherit inputs name;
             extraModules = (args.extraModules or [ ]) ++ [ { _file = "${dirname}/blinders.nix#mkBlindersProfiles"; config = {
                 nixpkgs.hostPlatform = localSystem;
                 profiles.blinders.enable = true;

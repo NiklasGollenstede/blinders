@@ -1,4 +1,4 @@
-dirname: inputs:  let
+dirname: inputs: let
     lib = inputs.self.lib.__internal__;
 in { pkgs, ... }:
 
