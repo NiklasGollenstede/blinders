@@ -25,12 +25,12 @@ in rec {
             config.environment.systemPackages = lib.optionals addOutputs ((lib.attrValues (lib.fun.getModifiedPackages pkgs inputs.self.overlays)));
         } ]; }; };
         env = lib.fun.print-dev-env pkgs.${devShell};
-        blinders = pkgs.blinders.override (old: { context.args.boundArgs = lib.remove null [
+        blinders = pkgs.blinders.override (old: { context.args = (old.context.args or { }) // { boundArgs = (old.context.args.boundArgs or [ ]) ++ (lib.remove null ([
             "--nix" "--nixos" "--profile=!${profile}" (if devShell != null then "--env=!${env}" else null)
-            "--read-only=!./.blinders/" # add "--hide=!./.blinders/" to args to completely hide it
-            "--fs=bind:!./.blinders/home/bash_history:~/.bash_history"
+            "--read-only=!./.blinders/" # add "--hide=!./.blinders/" or "--mount=tmpfs:!./.blinders/" to args to completely hide it
+            "--mount=bind:!./.blinders/home/bash_history:~/.bash_history"
             "--overlay-glob=!**/.git/"
-        ]; });
+        ] ++ args)); }; });
         vsCodeSettings = ''
             "chat.disableAIFeatures": false,
             "chat.tools.terminal.terminalProfile.linux": {
@@ -42,7 +42,7 @@ in rec {
             "chat.tools.terminal.autoApprove": {
                 "/^/": { "approve": true, "matchCommandLine": true, },
             },
-	        "github.copilot.chat.additionalReadAccessPaths": [ "/nix/store", ],
+            "github.copilot.chat.additionalReadAccessPaths": [ "/nix/store", ],
         '';
     in { ${appName} = (pkgs.writeShellScriptBin "init" ''
         set -u -o pipefail # bash
@@ -50,7 +50,7 @@ in rec {
         description=${lib.escapeShellArg description}$'\n'
         argvDesc="" ; details=""
         declare -g -A allowedArgs=(
-            [--root=dir]="The path in which to create the ».blinders« state directory. Defaults to the closest parent that contains a».git/config«."
+            [--root=dir]="The path in which to create the ».blinders« state directory. Defaults to the closest parent that contains a ».git/config«. Blinders will need to be started in or with this directory as »--dir«."
         )
 
         source ${inputs.functions.lib.bash.generic-arg-parse}
@@ -66,7 +66,7 @@ in rec {
         fi ; cd "$root" || exit
         mkdir -p .blinders && cd .blinders || exit
 
-        mkdir -p home bin || exit
+        mkdir -p home bin tmp || exit
         printf '*\n' > ./.gitignore || exit
         : >> ./home/bash_history || exit
         nix build --out-link ./bin/blinders ${blinders} && ln -sfT "$( readlink -f ./bin/blinders )"/bin/blinders ./bin/blinders || exit
@@ -79,8 +79,8 @@ in rec {
         if [[ ''${TERM_PROGRAM:-} == "vscode" ]] ; then
             workspaces=$( shopt -s nullglob ; echo "$PWD"/*.code-workspace "$PWD"/.vscode/*.code-workspace )
             printf '\nMake sure to have these settings in your the "settings" of your workspace%s or %s/.vscode/settings.json:\n' "''${workspaces:+ (maybe: $workspaces ?)}" "$PWD" >&2
-            printf '\n%s' ${lib.escapeShellArg vsCodeSettings} >&2 # (has a tailing newline)
-            printf '\nIn a workspace with multiple "folders", initialize the blinders state in each of them, or pick one of the "folders" and add its "name" to the ''${workspaceFolder:name} in the settings to point to the shared .blinders dir (e.g. "''${workspaceFolder:sources}/../.blinders/...").\n' >&2
+            printf '\n%s\n' ${lib.escapeShellArg vsCodeSettings} >&2 # (has a tailing newline)
+            if [[ ''${workspaces:-} ]] ; then printf '%s\n' 'In a workspace with multiple "folders", initialize the blinders state in each of them, or pick one of the "folders" and add its "name" to the ''${workspaceFolder:name} in the settings to point to the shared .blinders dir (e.g. "''${workspaceFolder:sources}/../.blinders/...").' >&2 ; fi
         fi
 
     '').overrideAttrs (old: {

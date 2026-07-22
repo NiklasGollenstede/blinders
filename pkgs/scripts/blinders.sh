@@ -21,7 +21,7 @@ declare -g -A allowedArgs=(
     [--overlay-glob=[#!?]glob ...]="Same as »--overlay«, but with glob patterns instead of literal paths. The patterns are evaluated once at startup."
     [--read-only=[+#!?]rel_path[/] ...]="Relative path inside »--dir« to make read-only. Does not support symlinks."
     [--read-only-glob=[#!?]glob ...]="Same as »--read-only«, but with glob patterns instead of literal paths. The patterns are evaluated once at startup."
-    [--fs=type:[[+#!?]source[/]:]target ...]="Additional custom filesystem mounts. Supports a subset of »bwrap«'s mount options (»bind«, »ro-bind«, »dev-bind«, »tmp-overlay« (with a single »overlay-src« as »source«), »symlink«, »tmpfs«, »proc«, »dev«, »dir«) with colons to separate the arguments (e.g. »--fs=tmpfs:/tmp« or »--fs=bind:/host/path:/container/path«). Relative paths are relative to »--dir«, paths starting with »~/« are relative to »"'$HOME'"«. Source paths (where required) that do not exist are considered a conflict (except with »symlink«). Order for mounts with different targets does not matter, as all mounts are sorted by target path. Later »--fs« mounts with the same target overwrite earlier ones. »--fs« options replace mounts created by default or by other options. Use type »none« to remove mounts. Does not support symlinks (other than with type »symlink«)."
+    [--mount=type:[[+#!?][source[/]]:]target ...]="Additional custom filesystem mounts. Supports a subset of »bwrap«'s mount options (»bind«, »ro-bind«, »dev-bind«, »tmp-overlay« (with a single »overlay-src« as »source«), »symlink«, »tmpfs«, »proc«, »dev«, »dir«) with colons to separate the arguments (e.g. »--mount=tmpfs:/tmp« or »--mount=bind:/host/path:/container/path«). Relative paths are relative to »--dir«, paths starting with »~/« are relative to »"'$HOME'"«. Source paths (where required) that do not exist are considered a conflict (except with »symlink«). An omitted »source« is set equal to »target«, and a »source« specified for a »target« that does not need one is ignored silently. Order for mounts with different targets does not matter, as all mounts are sorted by target path. Later »--mount« mounts with the same target overwrite earlier ones. »--mount« options replace mounts created by default or by other options. Use type »none« to remove mounts. Does not support symlinks (other than with type »symlink«)."
 
     [-n, --nix]="Allow access to the Nix daemon (and read-only to the Nix DBs). Read access to all of »/nix/store« is always granted."
 
@@ -94,7 +94,7 @@ Example usage:
         $ blinders --wayland --tty -- bash
 
     Open a shell for an AI agent, with explicit (but opportunistic) security settings:
-        $ blinders --dir="${workspaceFolder}" --nix --nixos --only-git=#1 --hide=+./.blinders/ --profile=?./.blinders/profile --fs=bind:+./.blinders/home/bash_history:~/.bash_history --hide-glob=?.vscode/ --hide-glob=?.env --overlay-glob=#**/.git/ --tty -- bash
+        $ blinders --dir="${workspaceFolder}" --nix --nixos --only-git=#1 --hide=+./.blinders/ --profile=?./.blinders/profile --mount=bind:+./.blinders/home/bash_history:~/.bash_history --hide-glob=?.vscode/ --hide-glob=?.env --overlay-glob=#**/.git/ --tty -- bash
 
     To obtain a project-specific blinders profile:
         `flake.nix`: outputs.packages.${system}.my-profile = pkgs.mkBlindersProfile { inherit inputs; config.environment.systemPackages = [ pkgs.foo ]; };
@@ -109,7 +109,7 @@ Example usage:
         $ blinders --env=./.blinders/env --profile=/etc/blinders/system-profile
 
     Or bind arguments, including a profile and/or env, to a custom binders variant:
-        `flake.nix`: outputs.packages.${system}.my-blinders = pkgs.blinders.override (old: { context.args.boundArgs = [ "--tty" "--nix" "--nixos" "--profile=${outputs.packages.${system}.my-profile}" "--env=${lib.fun.print-dev-env outputs.packages.${system}.dev-shell}" "--fs=bind:?./.blinders/home/bash_history:~/.bash_history" "--hide-glob=?.env" "--overlay-glob=#**/.git/" ]; });
+        `flake.nix`: outputs.packages.${system}.my-blinders = pkgs.blinders.override (old: { context.args.boundArgs = [ "--tty" "--nix" "--nixos" "--profile=${outputs.packages.${system}.my-profile}" "--env=${lib.fun.print-dev-env outputs.packages.${system}.dev-shell}" "--mount=bind:?./.blinders/home/bash_history:~/.bash_history" "--hide-glob=?.env" "--overlay-glob=#**/.git/" ]; });
         $ nix run .#my-blinders --
 
     All of that can be combined with »mkBlindersInitApp« (even this minimal example will pick up any packages added by your flake and include it s default dev shell environment):
@@ -147,7 +147,7 @@ function abort { echo "Error: $1" >&2 ; exit "${2:-1}" ; }
 function create { if [[ ${4:-} ]] ; then
     if [[ $4 == */ ]] ; then mkdir -p "$4" || exit "${2:-1}" ; else mkdir -p "${4%/*}" && : >"$4" || exit "${2:-1}" ; fi
 else abort "$@" ; fi ; }
-# Takes a »string« optionally starting with !/+, #, or ?, assigns the string to the variable »name« without the prefix, ans sets »report« based on the prefix, or to »default« if there was none:
+# Takes a »string« optionally starting with !/+, #, or ?, assigns the string to the variable »name« without the prefix, and sets »report« based on the prefix, or to »default« if there was none:
 function pop-report-level { # 1: default, 2: name, 3: string
     report=$1 ; local -n var=$2 ; var=$3
     local re='^([!#?]).*' ; [[ $report == create ]] && re='^([!+#?]).*'
@@ -286,7 +286,7 @@ function source-env { # 1: spec
 
 ## Argument fallbacks
 
-if [[ ${args[trace]:-} ]] ; then declare -p args argv ; set -x ; fi
+if [[ ${args[trace]:-} ]] ; then declare -p args argv argv_only argv_only_glob argv_hide argv_hide_glob argv_overlay argv_overlay_glob argv_read_only argv_read_only_glob argv_mount argv_seccomp argv_var 2>/dev/null ; set -x ; fi
 if [[ ${args[dry-run]:-} ]] ; then
     if [[ ! -v args[host-net] ]] ; then args[host-net]=1 ; fi
     if [[ ! ${args[host-net]:-} ]] ; then abort "»--dry-run« does not work with »--host-net« explicitly disabled." ; fi
@@ -326,7 +326,6 @@ if [[ ! -v args[strict-profile] && ${args[nixos]} ]] ; then args[strict-profile]
 #if [[ ! -v args[env] && ${args[strict-profile]} && ${args[nixos]} ]] ; then args[env]=/etc/set-environment ; fi
 if [[ ! -v args[seccomp-default] ]] ; then args[seccomp-default]=1 ; fi
 if [[ ${args[seccomp-default]:-} && ! -v args[seccomp-fallback] ]] ; then args[seccomp-fallback]="ERRNO(1)" ; fi # 1: Operation not permitted
-#declare -p config_boundArgs args argv_hide argv_read_only argv_hide_glob argv_read_only_glob argv_fs argv_seccomp argv 2>/dev/null ; exit
 
 
 # Lunching (and --[no-]nsjail mode)
@@ -650,25 +649,27 @@ for type in hide overlay read-only only ; do
     done
 done
 
-for fs in "${argv_fs[@]}" ; do
-    type=${fs%%:*} ; rest=${fs/$type:/} ; if [[ $rest == *:* ]] ; then source=${rest%%:*} target=${rest#*:} ; else source= target=$rest ; fi
+for mount in "${argv_mount[@]}" ; do
+    type=${mount%%:*} ; rest=${mount/$type:/} ; if [[ $rest == *:* ]] ; then source=${rest%%:*} target=${rest#*:} ; else source= target=$rest ; fi
     pop-report-level create source "$source"
+    if [[ ! $source ]] ; then source=$target ; fi
     if [[ $source == '~/'* ]] ; then source=$HOME${source/#\~} ; fi
     if [[ $target == '~/'* ]] ; then target=$HOME${target/#\~} ; fi
     if [[ $target != /* ]] ; then target=$dir/$target ; fi # target not existing is fine
     if [[ ${targets[$target]:-} ]] ; then
-        warn "Target path for »--fs=$fs« is already used. Overwriting."
+        warn "Target path for »--mount=$mount« is already used. Overwriting."
         unset targets[$target] ; unset missing[$target] ; unset sources[$target] ; unset duplicates[$target]
     fi
     case $type in
+        rw-bind) type=bind ;& # fallthrough
         bind|ro-bind|dev-bind|tmp-overlay)
             if [[ $report != ${args[on-missing]} ]] ; then
-                ensure-source "$source" "Source path for --fs" $report && source=$absPath || continue
+                ensure-source "$source" "Source path for --mount" $report && source=$absPath || continue
             else source=$( cd "$dir" && realpath -s -m "$source" ) || exit ; fi ;& # fallthrough
         symlink) add-mount --"$type" "$source" "$target" ;;
         tmpfs|proc|dev|dir) add-mount --"$type" "$target" ;;
         none) : ;; # to remove default mounts
-        *) abort "Unsupported --fs type: $type" $invalidArgs ;;
+        *) abort "Unsupported --mount type: $type" $invalidArgs ;;
     esac
 done
 

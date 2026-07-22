@@ -39,7 +39,7 @@ in [ # Run »nix flake show« to see what this merges to:
             "--hide=?./.blinders/" # if ./.blinders does not exist, create it as directory; then hide it
             "--profile=?./.blinders/nixos-profile" # if there is a ./.blinders/nixos-profile, use that as profile; else ignore
             "--env=?./.blinders/dev-env"
-            "--fs=bind:?./.blinders/home/bash_history:~/.bash_history" # if ./.blinders/home/bash_history does not exist, create it as file; then bind it to ~/.bash_history
+            "--mount=bind:?./.blinders/home/bash_history:~/.bash_history" # if ./.blinders/home/bash_history does not exist, create it as file; then bind it to ~/.bash_history
             "--hide=?.vscode/" "--hide=?.env" # if ./.vscode / ./.env exists (even if git-tracked), hide them; else ignore
             "--read-only-glob=#**/.git/" # make any .git directories read-only; warn if there are none
         ]; });
