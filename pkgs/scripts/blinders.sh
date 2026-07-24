@@ -10,6 +10,7 @@ declare -g -A allowedArgs=(
     [-w, --wayland]="Bind the Wayland display socket into the container and set the WAYLAND_DISPLAY environment variable. It may be possible to hijack user input and clipboard contents and the like." # Consider https://git.sr.ht/~whynothugo/way-secure (not packaged) or https://github.com/talex5/wayland-proxy-virtwl (used by https://github.com/nixpak/nixpak).
     [-d, --dbus]="Bind the user D-Bus session bus socket into the container and set the DBUS_SESSION_BUS_ADDRESS environment variable. Note that this allows the sandbox to »systemd-run --user« arbitrary commands on the host, thus largely invalidating the sandboxing." # Consider xdg-dbus-proxy (used by https://github.com/nixpak/nixpak).
     [-g, --gpu]="Bind GPU devices (currently just /dev/dri) into the container. May be required for hardware acceleration in GUI applications."
+    [-k, --kvm]="Expose »/dev/kvm« to the sandbox."
 
     [--dir=path]='Host path to bind into the container at the same location. Defaults to ».«. As a precaution, relative paths are only accepted if they point at a child of »$HOME« or »${TMPDIR:-/tmp}«. To use the home itself or a directory outside of home / tmp, explicitly pass an absolute path. If the CWD is not (a child of) »--dir«, it will be set to »--dir«.'
     [--only=[+#!?]rel_path[/] ...]="Relative path inside »--dir« to make accessible (writable). Using one or more »--only« options makes »--dir« itself an otherwise empty directory inside the sandbox. Symlinks are copied (instead of bind-mounted)."
@@ -451,6 +452,7 @@ if [[ ${args[strict-profile]:-} ]] ; then
     if [[ ${args[nixos]:-} ]] ; then
         add-mount     --ro-bind "$( readlink "$profile"/etc )" /etc
         add-if-exists --symlink "$( readlink "$profile"/sw/bin/sh )" /bin/sh
+        add-if-exists --symlink "$( readlink "$profile"/sw/bin/env )" /usr/bin/env
         add-mount     --symlink "$profile" /run/current-system
     else # no warnings, the user chose to use (only) this:
         add-if-exists --ro-bind "$profile"/etc /etc # TODO: not a fan of exposing this much ...
@@ -512,6 +514,7 @@ else # generally inherit from the host, but overwrite with some things from the 
 
     if [[ ${args[nixos]:-} ]] ; then
         add-if-exists --symlink "$( readlink "$profile"/sw/bin/sh )" /bin/sh
+        add-if-exists --symlink "$( readlink "$profile"/sw/bin/env )" /usr/bin/env
         add-if-exists --symlink "$( readlink /lib64/ld-linux-x86-64.so.2 )" /lib64/ld-linux-x86-64.so.2
     else
         add-if-exists --ro-bind "$profile"/bin /bin ||
@@ -554,6 +557,10 @@ if [[ ${args[gpu]:-} ]] ; then
     add-mount --dev-bind /dev/dri /dev/dri
     add-if-exists --dev-bind /dev/kfd /dev/kfd # for AMD GPU compute
     # TODO: NVIDIA?
+fi
+
+if [[ ${args[kvm]:-} ]] ; then
+    add-mount --dev-bind /dev/kvm /dev/kvm
 fi
 
 

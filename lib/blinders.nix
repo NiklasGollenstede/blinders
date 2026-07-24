@@ -42,6 +42,7 @@ in rec {
             "chat.tools.terminal.autoApprove": {
                 "/^/": { "approve": true, "matchCommandLine": true, },
             },
+            "chat.tools.terminal.blockDetectedFileWrites": "never",
             "github.copilot.chat.additionalReadAccessPaths": [ "/nix/store", ],
         '';
     in { ${appName} = (pkgs.writeShellScriptBin "init" ''
