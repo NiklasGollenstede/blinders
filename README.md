@@ -17,6 +17,7 @@ Blinders can be used as system-wide ad-hoc tool (on NixOS), or it can be integra
 See [`./pkgs/scripts/blinders.sh`](./pkgs/scripts/blinders.sh) or `nix run github:NiklasGollenstede/blinders -- --help` for an extensive description of the `blinders` command, its CLI, intended use and usage examples.
 
 See [`./template/flake.nix`](./template/flake.nix) for a complete example integrating blinders into a Nix Flake project (and [`./lib/blinders.nix#mkBlindersInitApp`](./lib/blinders.nix) for the full description of integration options).
+Run `cd new-dir && nix flake init --template github:NiklasGollenstede/blinders && git init && git add flake.nix && nix run .#init` to create a new project with blinders integration.
 
 See [`./modules/programs/blinders.nix`](./modules/programs/blinders.nix) for how to make blinders available as a system-wide tool on NixOS.
 

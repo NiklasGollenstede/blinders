@@ -19,7 +19,7 @@ in [ # Run »nix flake show« to see what this merges to:
     ## Exports
 
     repo # lib.* nixosModules.* overlays.* (legacy)packages.*.* patches.*
-    { templates.default = { path = builtins.path { path = "${inputs.self}/template"; name = "blinders-template"; filter = path: type: path != ".blinders"; }; description = "Integrating blinders into a Nix Flake project"; }; }
+    { templates.default = { path = builtins.path { path = "${inputs.self}/template"; name = "blinders-template"; filter = path: type: builtins.baseNameOf path != ".blinders"; }; description = "Integrating blinders into a Nix Flake project"; }; }
 
 
     ## Examples:

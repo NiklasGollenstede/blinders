@@ -6,7 +6,7 @@ description="EXPERIMENTAL: Run programs in a sandbox with access to only a singl
 "
 argvDesc='[PROGRAM=$SHELL [ARGS]...]'
 declare -g -A allowedArgs=(
-    [-t, --tty]="Create a new (pseudo) terminal for the sandbox. Otherwise, the sandbox will not have a controlling terminal. Defaults to true iff no PROGRAM is passed (explicitly). Use »--no-tty«/»-T« to explicitly disable."
+    [-t, --tty]="Create a new (pseudo) terminal for the sandbox. Otherwise, the sandbox will not have a controlling terminal. Defaults to true if PROGRAM is empty or not explicitly given. Use »--no-tty«/»-T« to explicitly disable."
     [-w, --wayland]="Bind the Wayland display socket into the container and set the WAYLAND_DISPLAY environment variable. It may be possible to hijack user input and clipboard contents and the like." # Consider https://git.sr.ht/~whynothugo/way-secure (not packaged) or https://github.com/talex5/wayland-proxy-virtwl (used by https://github.com/nixpak/nixpak).
     [-d, --dbus]="Bind the user D-Bus session bus socket into the container and set the DBUS_SESSION_BUS_ADDRESS environment variable. Note that this allows the sandbox to »systemd-run --user« arbitrary commands on the host, thus largely invalidating the sandboxing." # Consider xdg-dbus-proxy (used by https://github.com/nixpak/nixpak).
     [-g, --gpu]="Bind GPU devices (currently just /dev/dri) into the container. May be required for hardware acceleration in GUI applications."
@@ -37,7 +37,7 @@ declare -g -A allowedArgs=(
     [--profile=[!#?]path]="System profile to provide the software environment inside the sandbox. Defaults to @{config.boundProfile:+»}@{config.boundProfile:-"the first of »/etc/blinders/system-profile«, »/run/current-system« and »/« that exists"}@{config.boundProfile:+«}. See »--nixos«, »--strict-profile« and »--on-missing«."
     [-p, --strict-profile]="Strictly only use the »--profile« for environment variables and file system contents (»/etc«, and for non-NixOS also »/bin«, »/lib(64)«, and »/usr«), unless overwritten by other options. In »--nixos« mode, this sources »/etc/set-environment«; otherwise, »/etc/environment« is parsed. Without »--strict-profile«, environment variables are inherited and a minimal »/etc« is constructed from ambient information to create a working sandbox environment. With »--strict-profile«, it is the callers responsibility to provide a »--profile« that is suitable in terms of functionality and isolation. Its »/etc« should at least have »passwd« and »group« and a »resolv.conf« as files (or symlinks). Those files (or their targets) will be shadowed by bind-mounted files with minimal correct settings. The files may also be symlinks, in which case the (direct) target files will be shadowed. Eposes the caller's UID+GID, and the env vars USER, GROUP, HOME, TERM and TERM_PROGRAM."
     # TODO?: ditch support for --no-strict-profile and require that blinders is built with a boundProfile?
-    [--env=[#!?]env.sh]="Path to a shell script that is sourced in the container before executing the command, to set up environment variables. The path has to be valid inside the container, for example a path in »--dir« or the nix store. If no explicit PROGRAM is given, this will be passed to the shell as »--rcfile« (instead of sourcing it before starting the shell)."
+    [--env=[#!?]env.sh]="Path to a shell script that is sourced in the container before executing the command, to set up environment variables. The path has to be valid inside the container, for example a path in »--dir« or the nix store. If PROGRAM is empty or not explicitly given, this will be passed to the shell as »--rcfile« (instead of sourcing it before starting the shell)."
     [--var=NAME[=[VALUE]] ...]="Set an environment variable in the container. Later options with the same »NAME« overwrite earlier ones. If no »=VALUE« is given, then it is inherited from the host environment (which is different from setting an empty value after »=«). These may overwrite variables set by »blinders« itself (depending on other options), but are applied early in the container, before »--profile«/»/etc/environment«/»--env«."
 
     [--on-missing=action]="Action to take when the source path of one or more default mounts is missing (or otherwise invalid). Valid choices are »abort«/»!« (the default), »warn«/»#« and »ignore«/»?«. See below for their semantics."
@@ -298,15 +298,15 @@ case ${args[on-missing]:-} in
     ignore|'?') args[on-missing]=ignore ;;
     *) abort "Invalid value for --on-missing: ${args[on-missing]:-}" $invalidArgs ;;
 esac
-if [[ ${#argv[@]} == 0 ]] ; then
+if [[ ${#argv[@]} == 0 || ${argv[0]:-} == '' ]] ; then
     if [[ ! -v args[tty] ]] ; then args[tty]=1 ; fi
     if [[ ${args[env]:-} ]] ; then
         printf '%s\n' '[ -n "$PS1" ] && [ -e ~/.bashrc ] && source ~/.bashrc' 'shopt -u expand_aliases' "$( source-env "${args[env]}" )" 'shopt -s expand_aliases' >$tmp/rcfile
         add-mount --ro-bind $tmp/rcfile /tmp/rcfile
-        argv=( "$SHELL" --rcfile /tmp/rcfile )
+        argv=( "$SHELL" --rcfile /tmp/rcfile "${argv[@]:1}" )
         unset args[env]
     else
-        argv=( "$SHELL" )
+        argv=( "$SHELL" "${argv[@]:1}" )
     fi
 fi
 pop-report-level abort args[profile] "${args[profile]:-}" ; if [[ ${args[profile]:-} && ! -e ${args[profile]:-} ]] ; then
@@ -682,7 +682,7 @@ done
 
 if [[ ${args[var]:-} ]] ; then for var in "${argv_var[@]}" ; do
     name=${var%%=*} ; value=${var#*=}
-    if [[ $var == "$name" && ${!name@a} == *x* ]] ; then value=${!name} ; fi
+    if [[ $var == "$name" ]] ; then if [[ ${!name@a} == *x* ]] ; then value=${!name} ; else value= ; fi ; fi
     add-env "$name" "$value"
 done ; fi
 

@@ -12,6 +12,8 @@ in rec {
         args ? [ ], # Additional arguments to bind to the blinders program.
         config ? { }, # Blinders profile NixOS configuration.
         devShell ? null, # Name of a package/devShell in `pkgs` to use as blinders »--env«.
+        shareTmpDir ? "nix-shell", # Whether to share »${TMPDIR:-/tmp}« with the sandbox. Either always (true), never (false), or when the calling shell was (already) a nix dev shell ("nix-shell", the default). If a »devShell« is specified, this also prevents that from changing »$TMPDIR« (which it unconditionally does by default).
+        suffixTmpDir ? "blinders", # Suffix to append to the »$TMPDIR« path when sharing it with the sandbox via »shareTmpDir«.
         appName ? "init", # Name (not absolute output path) of the exported app (`nix run .#$appName -- ...`).
         addOutputs ? inputs?self.overlays, # Whether to add all packages exported by this flake (via overlays) to the blinders profile.
         extraSetup ? pkgs: ":", # Shell snippet to run during the initialization of the blinders state, e.g. to create bind mount sources that ».args« reference. This runs inside the future blinders state dir, but outside any sandboxing. The original working directory when the script was called is available as `$originalPWD`.
@@ -24,18 +26,39 @@ in rec {
             options.system.path = lib.mkOption { apply = env: env.override { ignoreSingleFileOutputs = true; }; }; # the below may add stuff to the system env that was not meant for that
             config.environment.systemPackages = lib.optionals addOutputs ((lib.attrValues (lib.fun.getModifiedPackages pkgs inputs.self.overlays)));
         } ]; }; };
-        env = lib.fun.print-dev-env pkgs.${devShell};
-        blinders = pkgs.blinders.override (old: { context.args = (old.context.args or { }) // { boundArgs = (old.context.args.boundArgs or [ ]) ++ (lib.remove null ([
-            "--nix" "--nixos" "--profile=!${profile}" (if devShell != null then "--env=!${env}" else null)
-            "--read-only=!./.blinders/" # add "--hide=!./.blinders/" or "--mount=tmpfs:!./.blinders/" to args to completely hide it
-            "--mount=bind:!./.blinders/home/bash_history:~/.bash_history"
-            "--overlay-glob=!**/.git/"
-        ] ++ args)); }; });
+        env = (lib.fun.print-dev-env pkgs.${devShell}).overrideAttrs (old: lib.optionalAttrs (shareTmpDir != false) {
+            args = let prev = builtins.elemAt old.args 1; in [ "-c" ''
+                echo 'nix_saved_TMPDIR=''${TMPDIR:-}' >>$out
+                ${prev}
+                echo ${lib.escapeShellArg ''if ${if shareTmpDir == true then "true" else ''[[ $nix_saved_TMPDIR == */nix-shell.* ]]''} ; then
+                    rmdir "$TMPDIR" &>/dev/null || true
+                    ${lib.concatStrings (map (var: "export ${var}=$nix_saved_TMPDIR\n") [ "TMP" "TMPDIR" "TEMP" "TEMPDIR" ])}
+                fi ; unset nix_saved_TMPDIR''}
+            '' ];
+        });
+        blinders = pkgs.blinders.override (old: {
+            context.args = (old.context.args or { }) // { boundArgs = (old.context.args.boundArgs or [ ]) ++ (lib.remove null ([
+                "--nix" "--nixos" "--profile=!${profile}"
+                (if devShell != null then "--env=!${env}" else null)
+                (if devShell != null && shareTmpDir != false then "--var=TMPDIR" else null)
+                "--read-only=!./.blinders/" # add "--hide=!./.blinders/" or "--mount=tmpfs:!./.blinders/" to args to completely hide it
+                "--mount=bind:!./.blinders/home/bash_history:~/.bash_history"
+                "--overlay-glob=!**/.git/"
+            ] ++ args)); };
+            preScript = (old.preScript or "") + ''
+                ${lib.optionalString (shareTmpDir != false) ''
+                    if ${if shareTmpDir == true then "true" else ''[[ ''${TMPDIR:-} == */nix-shell.* ]]''} ; then
+                        ${lib.optionalString (suffixTmpDir != false) "TMPDIR=$TMPDIR/${lib.escapeShellArg suffixTmpDir}/"}
+                        set -- '--mount=rw-bind:+:'"$TMPDIR" "$@"
+                    fi
+                ''}
+            '';
+        });
         vsCodeSettings = ''
             "chat.disableAIFeatures": false,
             "chat.tools.terminal.terminalProfile.linux": {
                 "path": "''${workspaceFolder}/.blinders/bin/blinders",
-                "args": [ "--dir=''${workspaceFolder}", ],
+                "args": [ "--dir=''${workspaceFolder}", "--", "", ],
             },
             "chat.tools.terminal.enableAutoApprove": true,
             "chat.tools.terminal.ignoreDefaultAutoApproveRules": true,
